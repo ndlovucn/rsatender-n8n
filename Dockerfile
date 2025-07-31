@@ -28,9 +28,8 @@ WORKDIR /home/node/.n8n
 # Expose n8n port
 EXPOSE 5678
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD curl -f http://localhost:5678/healthz || exit 1
+# Health check - n8n responds on root path
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:5678/ || exit 1
 
-# Start n8n
-CMD ["n8n"]
+# Use default CMD from base image - don't override with custom CMD
