@@ -58,7 +58,7 @@ The enhanced workflow maps scraped data to the `tenders` table schema:
 ### 3. **Firecrawl Request**
 - **Purpose**: Initiates web scraping using Firecrawl API
 - **Configuration**:
-  - API Key: `fc-8c4e0683872947eb8d1a9733d1c2f0a9`
+  - API Key: `${FIRECRAWL_API_KEY}`
   - Format: Markdown
   - Wait Time: 15 seconds
   - Content: Main content only
@@ -126,11 +126,11 @@ The enhanced workflow maps scraped data to the `tenders` table schema:
 
 ### **PostgreSQL Connection**
 ```yaml
-Host: postgres
+Host: ${DB_HOST}
 Port: 5432
-Database: tendermatch_dev
-User: dev
-Password: dev
+Database: ${DB_NAME}
+User: ${DB_USERNAME}
+Password: ${DB_PASSWORD}
 SSL: Disabled
 ```
 
@@ -221,7 +221,7 @@ curl http://localhost:5678/healthz
 
 ### **3. Import Workflow**
 1. Open n8n: http://localhost:5678
-2. Login: admin / tendermatch2024
+2. Login: your configured n8n credentials
 3. Go to Workflows
 4. Click "Import from file"
 5. Select: `n8n-workflows/eskom_n8n-scraper-enhanced.json`
