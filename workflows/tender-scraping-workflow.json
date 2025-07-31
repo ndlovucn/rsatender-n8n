@@ -1,0 +1,482 @@
+{
+    "name": "Tender Scraping Workflow",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "hour",
+                            "expression": "*/2"
+                        }
+                    ]
+                }
+            },
+            "id": "cron-trigger",
+            "name": "Cron Trigger",
+            "type": "n8n-nodes-base.cron",
+            "typeVersion": 1,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "SELECT id, name, base_url, source_type, is_active FROM tender_sources WHERE is_active = true ORDER BY priority DESC",
+                "options": {}
+            },
+            "id": "get-active-sources",
+            "name": "Get Active Sources",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.4,
+            "position": [
+                460,
+                300
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres-credentials",
+                    "name": "PostgreSQL"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "batchSize": 1,
+                "options": {}
+            },
+            "id": "split-sources",
+            "name": "Split Sources",
+            "type": "n8n-nodes-base.splitInBatches",
+            "typeVersion": 3,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://localhost:8080/tenders/scrape/source/{{ $json.id }}",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "fromDate",
+                            "value": "{{ $now.minus({days: 1}).toISOString().split('T')[0] }}"
+                        },
+                        {
+                            "name": "maxResults",
+                            "value": "50"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "scrape-source",
+            "name": "Scrape Source",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    },
+                    "conditions": [
+                        {
+                            "id": "check-success",
+                            "leftValue": "={{ $json.success }}",
+                            "rightValue": true,
+                            "operator": {
+                                "type": "boolean",
+                                "operation": "equal"
+                            }
+                        }
+                    ],
+                    "combinator": "and"
+                },
+                "options": {}
+            },
+            "id": "check-result",
+            "name": "Check Result",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                1120,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "insert",
+                "table": "tender_sources",
+                "columns": {
+                    "parameters": [
+                        {
+                            "column": "last_scraped_at",
+                            "value": "={{ $now }}"
+                        },
+                        {
+                            "column": "consecutive_failures",
+                            "value": "0"
+                        },
+                        {
+                            "column": "last_error",
+                            "value": "Success"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "update-success",
+            "name": "Update Success",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.4,
+            "position": [
+                1340,
+                200
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres-credentials",
+                    "name": "PostgreSQL"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "operation": "insert",
+                "table": "tender_sources",
+                "columns": {
+                    "parameters": [
+                        {
+                            "column": "last_scraped_at",
+                            "value": "={{ $now }}"
+                        },
+                        {
+                            "column": "consecutive_failures",
+                            "value": "={{ $json.consecutive_failures + 1 }}"
+                        },
+                        {
+                            "column": "last_error",
+                            "value": "={{ $json.message || 'Unknown error' }}"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "update-failure",
+            "name": "Update Failure",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.4,
+            "position": [
+                1340,
+                400
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres-credentials",
+                    "name": "PostgreSQL"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://localhost:8080/api/notifications/alert",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "message",
+                            "value": "Scraping failed for source: {{ $('Split Sources').item.json.name }}"
+                        },
+                        {
+                            "name": "error",
+                            "value": "={{ $json.message || 'Unknown error' }}"
+                        },
+                        {
+                            "name": "source_id",
+                            "value": "={{ $('Split Sources').item.json.id }}"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "send-alert",
+            "name": "Send Alert",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1560,
+                400
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    },
+                    "conditions": [
+                        {
+                            "id": "check-count",
+                            "leftValue": "={{ $json.count }}",
+                            "rightValue": 0,
+                            "operator": {
+                                "type": "number",
+                                "operation": "gt"
+                            }
+                        }
+                    ],
+                    "combinator": "and"
+                },
+                "options": {}
+            },
+            "id": "check-tenders-found",
+            "name": "Check Tenders Found",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                1560,
+                200
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://localhost:8080/api/notifications/success",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "message",
+                            "value": "Successfully scraped {{ $json.count }} tenders from {{ $('Split Sources').item.json.name }}"
+                        },
+                        {
+                            "name": "source_id",
+                            "value": "={{ $('Split Sources').item.json.id }}"
+                        },
+                        {
+                            "name": "tender_count",
+                            "value": "={{ $json.count }}"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "send-success",
+            "name": "Send Success",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1780,
+                100
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://localhost:8080/api/notifications/info",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": [
+                        {
+                            "name": "message",
+                            "value": "No new tenders found for {{ $('Split Sources').item.json.name }}"
+                        },
+                        {
+                            "name": "source_id",
+                            "value": "={{ $('Split Sources').item.json.id }}"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "send-no-tenders",
+            "name": "Send No Tenders",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1780,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Cron Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "Get Active Sources",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Get Active Sources": {
+            "main": [
+                [
+                    {
+                        "node": "Split Sources",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Split Sources": {
+            "main": [
+                [
+                    {
+                        "node": "Scrape Source",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Scrape Source": {
+            "main": [
+                [
+                    {
+                        "node": "Check Result",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Check Result": {
+            "main": [
+                [
+                    {
+                        "node": "Update Success",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ],
+            "error": [
+                [
+                    {
+                        "node": "Update Failure",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Update Success": {
+            "main": [
+                [
+                    {
+                        "node": "Check Tenders Found",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Update Failure": {
+            "main": [
+                [
+                    {
+                        "node": "Send Alert",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Check Tenders Found": {
+            "main": [
+                [
+                    {
+                        "node": "Send Success",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ],
+            "error": [
+                [
+                    {
+                        "node": "Send No Tenders",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "pinData": {},
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [
+        {
+            "createdAt": "2024-01-15T10:00:00.000Z",
+            "updatedAt": "2024-01-15T10:00:00.000Z",
+            "id": "tender-scraping",
+            "name": "Tender Scraping"
+        }
+    ],
+    "triggerCount": 1,
+    "updatedAt": "2024-01-15T10:00:00.000Z",
+    "versionId": "1"
+}

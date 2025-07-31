@@ -1,0 +1,416 @@
+{
+  "name": "Eskom Tenders Scraper",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hour"
+            },
+            {
+              "field": "minute"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1632,
+        -144
+      ],
+      "id": "92753c49-5b2f-4d14-adf2-71cb025116d9",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Configuration for Eskom scraper\nconst config = {\n  baseUrl: 'https://tenderbulletin.eskom.co.za',\n  pageSize: 800,\n  fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago\n  firecrawlApiKey: 'fc-8c4e0683872947eb8d1a9733d1c2f0a9'\n};\n\n// Generate single URL for all tenders\nconst url = {\n  url: 'https://tenderbulletin.eskom.co.za/?pageSize=800&pageNumber=1',\n  pageNumber: 1,\n  config: config\n};\n\nconsole.log('Generated URL:', url.url);\nreturn [{ json: url }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1440,
+        -144
+      ],
+      "id": "b076954a-a066-40ea-bdd8-b5a4fd40037a",
+      "name": "Generate URLs"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/crawl",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-8c4e0683872947eb8d1a9733d1c2f0a9"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"url\": \"https://tenderbulletin.eskom.co.za/?pageSize=800&pageNumber=1\",\n  \"limit\": 1,\n  \"scrapeOptions\": {\n    \"formats\": [\n      \"markdown\"\n    ],\n    \"onlyMainContent\": true,\n    \"waitFor\": 15000,\n    \"parsePDF\": false,\n    \"maxAge\": 14400000\n  }\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1232,
+        -144
+      ],
+      "id": "a2a06b5f-51f0-46ca-8a21-8171b2b36a4e",
+      "name": "Firecrawl Request"
+    },
+    {
+      "parameters": {
+        "amount": 30
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1040,
+        -144
+      ],
+      "id": "dfb20ddd-e6df-45c9-b0d6-eb306f0dea80",
+      "name": "Wait Between Requests",
+      "webhookId": "wait-webhook"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-8c4e0683872947eb8d1a9733d1c2f0a9"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -832,
+        -144
+      ],
+      "id": "d50254c4-5a60-4958-9b26-ffc846b8a037",
+      "name": "Get Crawl Result"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "=data",
+        "include": "={{ $json[\"data\"] }}",
+        "options": {
+          "includeBinary": false
+        }
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        -144
+      ],
+      "id": "e21eab45-4c3e-433b-9632-d125aed1d7d6",
+      "name": "Split Crawl Data",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputItems = $input.all();\nlet allTenders = [];\nconst config = $('Generate URLs').first().json.config;\n\nif (inputItems && inputItems.length > 0) {\n    // Process each item in the array\n    inputItems.forEach((item, index) => {\n        try {\n            if (item.json && item.json.data && item.json.data.markdown) {\n                const markdownContent = item.json.data.markdown;\n                \n                // Check if this markdown contains tender data (not just loading message)\n                if (markdownContent && \n                    markdownContent.trim() && \n                    !markdownContent.includes('Loading Tenders') &&\n                    markdownContent.includes('- [**')) {\n                    \n                    const tenders = extractTendersFromMarkdown(markdownContent, config);\n                    if (tenders && tenders.length > 0) {\n                        allTenders = allTenders.concat(tenders);\n                    }\n                }\n            }\n        } catch (error) {\n            console.log(`Error processing item ${index}: ${error.message}`);\n        }\n    });\n}\n\nfunction extractTendersFromMarkdown(markdownContent, config) {\n    const tenders = [];\n    if (typeof markdownContent !== 'string') return tenders;\n\n    // Split into tender blocks\n    const tenderRegex = /- \\[\\*\\*([^\\]]+)\\*\\*\\]\\(([^)]+)\\)\\s*([\\s\\S]*?)(?=(?:- \\[\\*\\*|$))/g;\n    let match;\n    while ((match = tenderRegex.exec(markdownContent)) !== null) {\n        const referenceNumber = match[1].trim();\n        const originalUrl = match[2].trim();\n        const block = match[3].replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();\n\n        // Document URL\n        let documentUrl = '';\n        const docMatch = block.match(/\\[Download all Docs\\]\\(([^)]+)\\)/);\n        if (docMatch) documentUrl = docMatch[1].trim();\n\n        // Location\n        let location = '';\n        const locMatch = block.match(/Location([A-Za-z0-9 ,.\\-\\/]+)/i);\n        if (locMatch) location = locMatch[1].trim();\n\n        // Closing Date (improved)\n        let closingDate = '';\n        const closeMatch = block.match(/Closing Date([0-9A-Za-z\\- :]+)(?= Published Date|$)/i);\n        if (closeMatch) closingDate = closeMatch[1].trim();\n\n        // Published Date (improved)\n        let publicationDate = '';\n        const pubMatch = block.match(/Published Date([0-9A-Za-z\\- :]+)(?= \\[|$)/i);\n        if (pubMatch) publicationDate = pubMatch[1].trim();\n\n        // Issuing Department: look for all caps word(s) before Location or Closing Date\n        let issuingDepartment = '';\n        const deptMatch = block.match(/([A-Z ]{3,})(?=The|Location|Closing Date|Published Date)/);\n        if (deptMatch) issuingDepartment = deptMatch[1].trim();\n\n        // Title: from start to first occurrence of department, Location, or Closing Date\n        let titleEnd = block.length;\n        if (deptMatch) {\n            titleEnd = block.indexOf(deptMatch[0]);\n        } else if (block.indexOf('Location') !== -1) {\n            titleEnd = Math.min(titleEnd, block.indexOf('Location'));\n        } else if (block.indexOf('Closing Date') !== -1) {\n            titleEnd = Math.min(titleEnd, block.indexOf('Closing Date'));\n        }\n        let title = block.substring(0, titleEnd).trim();\n\n        // Remove department from title if present\n        if (issuingDepartment && title.endsWith(issuingDepartment)) {\n            title = title.slice(0, -issuingDepartment.length).trim();\n        }\n\n        // Description: from after department to Location or Closing Date\n        let description = '';\n        if (deptMatch) {\n            const descStart = block.indexOf(deptMatch[0]) + deptMatch[0].length;\n            let descEnd = block.length;\n            if (block.indexOf('Location', descStart) !== -1) {\n                descEnd = block.indexOf('Location', descStart);\n            } else if (block.indexOf('Closing Date', descStart) !== -1) {\n                descEnd = block.indexOf('Closing Date', descStart);\n            }\n            description = block.substring(descStart, descEnd).trim();\n        }\n\n        // Remove repeated title/department from description\n        if (description && title && description.startsWith(title)) {\n            description = description.slice(title.length).trim();\n        }\n        if (description && issuingDepartment && description.startsWith(issuingDepartment)) {\n            description = description.slice(issuingDepartment.length).trim();\n        }\n\n        // Status\n        let status = 'OPEN';\n        const lowerTitle = title.toLowerCase();\n        if (lowerTitle.includes('cancellation') || lowerTitle.includes('cancelled')) {\n            status = 'CANCELLED';\n        } else if (lowerTitle.includes('award') || lowerTitle.includes('regret')) {\n            status = 'AWARDED';\n        }\n\n        // Clean up\n        [title, description, issuingDepartment, location, closingDate, publicationDate] =\n            [title, description, issuingDepartment, location, closingDate, publicationDate].map(s => s.replace(/\\\\n/g, '').trim());\n\n        // Parse dates\n        const parsedClosingDate = parseEskomDate(closingDate);\n        const parsedPublicationDate = parseEskomDate(publicationDate);\n\n        // Filter by date if specified\n        if (config.fromDate && parsedPublicationDate) {\n            if (parsedPublicationDate < config.fromDate) {\n                continue; // Skip tenders older than fromDate\n            }\n        }\n\n        // Create tender object matching the database schema\n        const tender = {\n            referenceNumber: referenceNumber || generateUUID(),\n            title: title || 'Unknown Tender',\n            description: description || '',\n            originalUrl: originalUrl || '',\n            documentUrl: documentUrl || null,\n            publicationDate: parsedPublicationDate ? parsedPublicationDate.toISOString() : null,\n            closingDate: parsedClosingDate ? parsedClosingDate.toISOString() : null,\n            issuingDepartment: issuingDepartment || 'ESKOM ENTERPRISES',\n            status: status,\n            categories: ['Energy', 'Electricity', 'Utilities'],\n            categoriesText: 'Energy,Electricity,Utilities',\n            locations: location ? [location] : ['South Africa'],\n            locationsText: location || 'South Africa',\n            keywords: [],\n            keywordsText: '',\n            additionalDetails: '{}',\n            additionalDetailsText: '',\n            isBriefingCompulsory: false,\n            updatedAt: new Date().toISOString(),\n            lastScrapedAt: new Date().toISOString(),\n            // Source ID will be set by the database node\n            sourceId: null\n        };\n\n        tenders.push(tender);\n    }\n    return tenders;\n}\n\nfunction parseEskomDate(dateStr) {\n    if (!dateStr) return null;\n    \n    try {\n        // Handle formats like \"2027-Feb-22 13:33:00\" and \"2023-May-22 13:35:12\"\n        const pattern = /(\\d{4})-(\\w{3})-(\\d{1,2})/;\n        const match = dateStr.match(pattern);\n        \n        if (match) {\n            const year = match[1];\n            const month = match[2];\n            const day = match[3].padStart(2, '0');\n            \n            const monthMap = {\n                'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',\n                'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',\n                'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'\n            };\n            \n            const monthNum = monthMap[month];\n            if (monthNum) {\n                return new Date(`${year}-${monthNum}-${day}T00:00:00.000Z`);\n            }\n        }\n        \n        // Try standard ISO format\n        return new Date(dateStr);\n    } catch (error) {\n        console.log(`Could not parse date: ${dateStr}`);\n        return null;\n    }\n}\n\nfunction generateUUID() {\n    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n        const r = Math.random() * 16 | 0;\n        const v = c == 'x' ? r : (r & 0x3 | 0x8);\n        return v.toString(16);\n    });\n}\n\n// Return all extracted tenders\nreturn allTenders.map(tender => ({ json: tender }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        -144
+      ],
+      "id": "9f55c63e-3d67-4627-ad12-af47ff86115b",
+      "name": "Extract Tenders"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hardcoded source ID for Eskom (from database)\nconst sourceId = '29ad20d8-8514-441d-bf90-f0f8fb11aa25';\n\n// Add source ID to all tenders from Extract Tenders node\nconst tenders = $input.all().map(item => ({\n    ...item.json,\n    sourceId: sourceId\n}));\n\nconsole.log(`Added source ID ${sourceId} to ${tenders.length} tenders`);\nreturn tenders.map(tender => ({ json: tender }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        -144
+      ],
+      "id": "c23d18ed-5aec-41a3-a485-46ce9de0468d",
+      "name": "Add Source ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate UUID for all tenders (required for upsert)\nconst results = [];\n\n// Process all input items\nfor (const item of $input.all()) {\n    const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n        const r = Math.random() * 16 | 0;\n        const v = c == 'x' ? r : (r & 0x3 | 0x8);\n        return v.toString(16);\n    });\n    \n    // Combine tender data with UUID\n    const tenderWithUuid = {\n        ...item.json,\n        id: uuid,\n        createdAt: new Date().toISOString(),\n        updatedAt: new Date().toISOString(),\n        lastScrapedAt: new Date().toISOString()\n    };\n    \n    console.log(`Generated UUID ${uuid} for tender: ${tenderWithUuid.referenceNumber}`);\n    results.push({ json: tenderWithUuid });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -144
+      ],
+      "id": "5fe520f9-4db8-4e3d-bc5c-ce704742e36b",
+      "name": "Generate UUID"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO tenders (id, title, description, reference_number, source_id, original_url, document_url, publication_date, closing_date, issuing_department, status, categories, categories_text, locations, locations_text, keywords, keywords_text, additional_details, additional_details_text, embedding, is_briefing_compulsory, created_at, updated_at, last_scraped_at, migrated_to_mongodb, vectorized) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, array_fill(0::float4, ARRAY[1024])::vector, $20, $21, $22, $23, $24, $25) ON CONFLICT (reference_number) DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description, original_url = EXCLUDED.original_url, document_url = EXCLUDED.document_url, publication_date = EXCLUDED.publication_date, closing_date = EXCLUDED.closing_date, issuing_department = EXCLUDED.issuing_department, status = EXCLUDED.status, categories = EXCLUDED.categories, categories_text = EXCLUDED.categories_text, locations = EXCLUDED.locations, locations_text = EXCLUDED.locations_text, keywords = EXCLUDED.keywords, keywords_text = EXCLUDED.keywords_text, additional_details = EXCLUDED.additional_details, additional_details_text = EXCLUDED.additional_details_text, is_briefing_compulsory = EXCLUDED.is_briefing_compulsory, updated_at = EXCLUDED.updated_at, last_scraped_at = EXCLUDED.last_scraped_at",
+        "options": {
+          "queryReplacement": "{{ $json.id }}, {{ $json.title }}, {{ $json.description }}, {{ $json.referenceNumber }}, {{ $json.sourceId }}, {{ $json.originalUrl }}, {{ $json.documentUrl }}, {{ $json.publicationDate }}, {{ $json.closingDate }}, {{ $json.issuingDepartment }}, {{ $json.status }}, {{ JSON.stringify($json.categories) }}, {{ $json.categoriesText }}, {{ JSON.stringify($json.locations) }}, {{ $json.locationsText }}, {{ JSON.stringify($json.keywords) }}, {{ $json.keywordsText }}, {{ $json.additionalDetails }}, {{ $json.additionalDetailsText }}, {{ $json.isBriefingCompulsory || false }}, {{ $json.createdAt || new Date().toISOString() }}, {{ $json.updatedAt }}, {{ $json.lastScrapedAt }}, {{ $json.migratedToMongodb || false }}, {{ $json.vectorized || false }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        320,
+        -144
+      ],
+      "id": "43c487cf-25ef-446c-800d-95da904410cc",
+      "name": "Upsert Tender",
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local-dev",
+          "name": "PostgreSQL Local Dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log the operation result for all input items\nconst results = [];\n\n// Process all input items\nfor (const item of $input.all()) {\n    const referenceNumber = item.json.referenceNumber || item.json.reference_number;\n    console.log(`UPSERTED: ${referenceNumber}`);\n    \n    results.push({ \n        json: { \n            operation: 'upserted',\n            referenceNumber: referenceNumber,\n            timestamp: new Date().toISOString()\n        } \n    });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        -144
+      ],
+      "id": "ed27224c-cdd8-417b-9a17-abb04b403499",
+      "name": "Log Operation"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8080/api/scraper/notifications/scraping-complete",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"source\": \"Eskom Tender Scraper\",\n  \"status\": \"success\",\n  \"operation\": \"upsert\",\n  \"tendersProcessed\": 1,\n  \"timestamp\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        768,
+        -144
+      ],
+      "id": "18361759-4734-4ae4-86f4-14e13ad1647e",
+      "name": "Send Notification"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8080/api/scraper/generate-embeddings/tenders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -144
+      ],
+      "id": "trigger-embeddings-12345",
+      "name": "Trigger Embedding Generation"
+    },
+    {
+      "parameters": {
+        "content": "Enhanced Eskom Tender Scraper with Upsert Strategy\n\nThis workflow:\n1. Generates single URL for Eskom tender bulletin (800 tenders)\n2. Uses Firecrawl to scrape the page\n3. Extracts tender data from markdown\n4. Adds hardcoded source ID to tender data\n5. Checks for existing tenders in database\n6. Updates existing tenders or inserts new ones (UPSERT)\n7. Sends completion notification\n\nReplaces SeleniumEskomTenderScraperImpl with latest data strategy",
+        "height": 200
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1632,
+        -352
+      ],
+      "typeVersion": 1,
+      "id": "4fb60e3e-30e2-4a45-974b-31e5bf9bf00d",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Generate URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate URLs": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl Request": {
+      "main": [
+        [
+          {
+            "node": "Wait Between Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Between Requests": {
+      "main": [
+        [
+          {
+            "node": "Get Crawl Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Crawl Result": {
+      "main": [
+        [
+          {
+            "node": "Split Crawl Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Crawl Data": {
+      "main": [
+        [
+          {
+            "node": "Extract Tenders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Tenders": {
+      "main": [
+        [
+          {
+            "node": "Add Source ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Source ID": {
+      "main": [
+        [
+          {
+            "node": "Generate UUID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate UUID": {
+      "main": [
+        [
+          {
+            "node": "Upsert Tender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Tender": {
+      "main": [
+        [
+          {
+            "node": "Log Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Operation": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Trigger Embedding Generation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "37d648b0-6440-4c60-836d-3021c3999a4b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e31ce79f91de81abc5ad3139f7da12e293084ac22356666fb1c6a156161f8717"
+  },
+  "id": "UTXmPQLDG2tCVbZN",
+  "tags": []
+}
